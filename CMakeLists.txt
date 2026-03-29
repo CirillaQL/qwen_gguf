@@ -17,6 +17,7 @@ endif()
 
 add_executable(qwen_gguf
     src/gguf.cpp
+    src/tokenizer.cpp
     src/main.cpp
 )
 

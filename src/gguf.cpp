@@ -95,19 +95,30 @@ ggml_type read_ggml_type(std::ifstream &input) {
 }
 
 uint32_t metadata_u32_or_default(const gguf_metadata &meta, const std::string &key, uint32_t default_value) {
-    for (const auto &kv : meta.kvs) {
-        if (kv.key.data != key) {
-            continue;
-        }
-
-        if (kv.value.type != GGUF_TYPE_UINT32) {
-            throw std::runtime_error("metadata key '" + key + "' is not UINT32");
-        }
-
-        return std::get<uint32_t>(kv.value.data);
+    const auto it = meta.kvs_map.find(key);
+    if (it == meta.kvs_map.end()) {
+        return default_value;
     }
 
-    return default_value;
+    const gguf_metadata_kv &kv = meta.kvs[it->second];
+    if (kv.value.type != GGUF_TYPE_UINT32) {
+        throw std::runtime_error("metadata key '" + key + "' is not UINT32");
+    }
+
+    return std::get<uint32_t>(kv.value.data);
+}
+
+void build_metadata_index(gguf_metadata &meta) {
+    meta.kvs_map.clear();
+    meta.kvs_map.reserve(meta.kvs.size());
+
+    for (size_t i = 0; i < meta.kvs.size(); ++i) {
+        const std::string &key = meta.kvs[i].key.data;
+        const auto [_, inserted] = meta.kvs_map.emplace(key, i);
+        if (!inserted) {
+            throw std::runtime_error("duplicate metadata key: " + key);
+        }
+    }
 }
 
 uint64_t tensor_element_count(const gguf_tensor_info &info) {
@@ -291,30 +302,6 @@ gguf_metadata_kv read_gguf_metadata_kv(std::ifstream &input) {
     return kv;
 }
 
-gguf_metadata load_gguf_metadata(const std::string &path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input.is_open()) {
-        throw std::runtime_error("failed to open GGUF file: " + path);
-    }
-
-    gguf_metadata meta{};
-    meta.header.magic = read_u32(input);
-    meta.header.version = read_u32(input);
-    meta.header.tensor_count = read_u64(input);
-    meta.header.metadata_kv_count = read_u64(input);
-
-    if (meta.header.magic != kGgufMagic) {
-        throw std::runtime_error("invalid GGUF magic");
-    }
-
-    meta.kvs.reserve(checked_size(meta.header.metadata_kv_count, "metadata kv count"));
-    for (uint64_t i = 0; i < meta.header.metadata_kv_count; ++i) {
-        meta.kvs.push_back(read_gguf_metadata_kv(input));
-    }
-
-    return meta;
-}
-
 gguf_tensor_info read_gguf_tensor_info(std::ifstream &input) {
     gguf_tensor_info info{};
     info.name = read_gguf_string(input);
@@ -352,6 +339,8 @@ gguf_model load_gguf_model(const std::string &path) {
     for (uint64_t i = 0; i < model.metadata.header.metadata_kv_count; ++i) {
         model.metadata.kvs.push_back(read_gguf_metadata_kv(input));
     }
+
+    build_metadata_index(model.metadata);
 
     model.alignment = metadata_u32_or_default(model.metadata, "general.alignment", 32);
 

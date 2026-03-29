@@ -74,15 +74,30 @@ struct gguf_metadata_kv {
     gguf_metadata_value value;
 };
 
+struct gguf_string_hash {
+    size_t operator()(const std::string &value) const noexcept {
+        // FNV Hash
+        constexpr size_t kOffset = 1469598103934665603ULL;
+        constexpr size_t kPrime = 1099511628211ULL;
+
+        size_t hash = kOffset;
+        for (unsigned char ch : value) {
+            hash ^= static_cast<size_t>(ch);
+            hash *= kPrime;
+        }
+        return hash;
+    }
+};
+
 struct gguf_metadata {
     gguf_header header;
     std::vector<gguf_metadata_kv> kvs;
+    std::unordered_map<std::string, size_t, gguf_string_hash> kvs_map;
 };
 
 gguf_string read_gguf_string(std::ifstream &input);
 gguf_metadata_value read_gguf_metadata_value(std::ifstream &input);
 gguf_metadata_kv read_gguf_metadata_kv(std::ifstream &input);
-gguf_metadata load_gguf_metadata(const std::string & path);
 void print_gguf_metadata(const gguf_metadata &meta);
 const char * gguf_type_name(gguf_type type);
 
