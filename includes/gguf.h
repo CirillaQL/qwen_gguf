@@ -114,12 +114,16 @@ struct gguf_tensor_info {
     uint64_t offset = 0;
 };
 
+struct gguf_tensor_data;
+
 struct gguf_model {
     gguf_metadata metadata;
     std::vector<gguf_tensor_info> tensor_infos;
+    std::unordered_map<std::string, size_t, gguf_string_hash> tensor_infos_map;
     uint64_t tensor_data_offset = 0;
     uint32_t alignment = 32;
     std::string file_path;
+    mutable std::unordered_map<std::string, std::shared_ptr<gguf_tensor_data>, gguf_string_hash> tensor_cache;
 };
 
 struct gguf_tensor_data {
@@ -131,7 +135,8 @@ gguf_tensor_info read_gguf_tensor_info(std::ifstream &input);
 gguf_model load_gguf_model(const std::string &path);
 void print_gguf_tensor_info(const gguf_tensor_info &info);
 void print_gguf_tensor_overview(const gguf_model &model, size_t limit = 8);
-gguf_tensor_data load_gguf_tensor_data(const gguf_model &model, const std::string &tensor_name);
+const gguf_tensor_data &load_gguf_tensor_data(const gguf_model &model, const std::string &tensor_name);
+void preload_gguf_tensors(const gguf_model &model);
 size_t ggml_type_size(ggml_type type);
 size_t ggml_blck_size(ggml_type type);
 const char *ggml_type_name(ggml_type type);

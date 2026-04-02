@@ -121,6 +121,19 @@ void build_metadata_index(gguf_metadata &meta) {
     }
 }
 
+void build_tensor_info_index(gguf_model &model) {
+    model.tensor_infos_map.clear();
+    model.tensor_infos_map.reserve(model.tensor_infos.size());
+
+    for (size_t i = 0; i < model.tensor_infos.size(); ++i) {
+        const std::string &name = model.tensor_infos[i].name.data;
+        const auto [_, inserted] = model.tensor_infos_map.emplace(name, i);
+        if (!inserted) {
+            throw std::runtime_error("duplicate tensor name: " + name);
+        }
+    }
+}
+
 uint64_t tensor_element_count(const gguf_tensor_info &info) {
     if (info.dimensions.empty()) {
         return 0;
@@ -348,6 +361,7 @@ gguf_model load_gguf_model(const std::string &path) {
     for (uint64_t i = 0; i < model.metadata.header.tensor_count; ++i) {
         model.tensor_infos.push_back(read_gguf_tensor_info(input));
     }
+    build_tensor_info_index(model);
 
     const uint64_t info_end = static_cast<uint64_t>(input.tellg());
     model.tensor_data_offset = align_offset(info_end, model.alignment);
@@ -409,20 +423,21 @@ void print_gguf_tensor_overview(const gguf_model &model, size_t limit) {
     }
 }
 
-gguf_tensor_data load_gguf_tensor_data(const gguf_model &model, const std::string &tensor_name) {
-    const auto it = std::find_if(
-        model.tensor_infos.begin(),
-        model.tensor_infos.end(),
-        [&](const gguf_tensor_info &info) { return info.name.data == tensor_name; }
-    );
-
-    if (it == model.tensor_infos.end()) {
-        throw std::runtime_error("tensor not found: " + tensor_name);
+const gguf_tensor_data &load_gguf_tensor_data(const gguf_model &model, const std::string &tensor_name) {
+    const auto cache_it = model.tensor_cache.find(tensor_name);
+    if (cache_it != model.tensor_cache.end()) {
+        return *cache_it->second;
     }
 
-    const uint64_t element_count = tensor_element_count(*it);
-    const size_t type_size = ggml_type_size(it->type);
-    const size_t block_size = ggml_blck_size(it->type);
+    const auto info_it = model.tensor_infos_map.find(tensor_name);
+    if (info_it == model.tensor_infos_map.end()) {
+        throw std::runtime_error("tensor not found: " + tensor_name);
+    }
+    const gguf_tensor_info &info = model.tensor_infos[info_it->second];
+
+    const uint64_t element_count = tensor_element_count(info);
+    const size_t type_size = ggml_type_size(info.type);
+    const size_t block_size = ggml_blck_size(info.type);
     if (block_size == 0 || element_count % block_size != 0) {
         throw std::runtime_error("invalid tensor block layout for: " + tensor_name);
     }
@@ -434,21 +449,28 @@ gguf_tensor_data load_gguf_tensor_data(const gguf_model &model, const std::strin
         throw std::runtime_error("failed to reopen GGUF file: " + model.file_path);
     }
 
-    const uint64_t absolute_offset = model.tensor_data_offset + it->offset;
+    const uint64_t absolute_offset = model.tensor_data_offset + info.offset;
     input.seekg(static_cast<std::streamoff>(absolute_offset), std::ios::beg);
     if (!input) {
         throw std::runtime_error("failed to seek tensor data for: " + tensor_name);
     }
 
-    gguf_tensor_data tensor{};
-    tensor.info = *it;
-    tensor.raw_data.resize(checked_size(byte_count, "tensor byte count"));
-    input.read(reinterpret_cast<char *>(tensor.raw_data.data()), static_cast<std::streamsize>(tensor.raw_data.size()));
+    auto tensor = std::make_shared<gguf_tensor_data>();
+    tensor->info = info;
+    tensor->raw_data.resize(checked_size(byte_count, "tensor byte count"));
+    input.read(reinterpret_cast<char *>(tensor->raw_data.data()), static_cast<std::streamsize>(tensor->raw_data.size()));
     if (!input) {
         throw std::runtime_error("failed to read tensor data for: " + tensor_name);
     }
 
-    return tensor;
+    const auto [inserted_it, _] = model.tensor_cache.emplace(tensor_name, std::move(tensor));
+    return *inserted_it->second;
+}
+
+void preload_gguf_tensors(const gguf_model &model) {
+    for (const gguf_tensor_info &info : model.tensor_infos) {
+        load_gguf_tensor_data(model, info.name.data);
+    }
 }
 
 const char *gguf_type_name(gguf_type type) {

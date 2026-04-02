@@ -6,6 +6,10 @@ project(qwen_gguf
     LANGUAGES CXX
 )
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -33,5 +37,30 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         -Wall
         -Wextra
         -Wpedantic
+    )
+
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+        target_compile_options(qwen_gguf PRIVATE
+            $<$<CONFIG:Release>:-mcpu=apple-m4>
+        )
+    endif()
+endif()
+
+target_compile_options(qwen_gguf PRIVATE
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-DNDEBUG>
+)
+
+if(APPLE)
+    target_link_options(qwen_gguf PRIVATE
+        $<$<CONFIG:Release>:-Wl,-dead_strip>
+    )
+endif()
+
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+if(ipo_supported)
+    set_target_properties(qwen_gguf PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
     )
 endif()

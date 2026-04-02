@@ -150,6 +150,18 @@ std::array<std::string, 256> build_bpe_byte_encoder() {
     return encoder;
 }
 
+std::unordered_map<std::string, unsigned char, gguf_string_hash> build_bpe_byte_decoder() {
+    const std::array<std::string, 256> encoder = build_bpe_byte_encoder();
+    std::unordered_map<std::string, unsigned char, gguf_string_hash> decoder;
+    decoder.reserve(encoder.size());
+
+    for (size_t byte_value = 0; byte_value < encoder.size(); ++byte_value) {
+        decoder.emplace(encoder[byte_value], static_cast<unsigned char>(byte_value));
+    }
+
+    return decoder;
+}
+
 std::string normalize_bpe_piece(const std::string &input) {
     static const std::array<std::string, 256> kByteEncoder = build_bpe_byte_encoder();
 
@@ -490,11 +502,22 @@ std::vector<int32_t> Tokenizer::encode(const std::string &text) const {
 }
 
 std::string Tokenizer::decode(const std::vector<int32_t> &token_ids) const {
-    std::ostringstream output;
+    static const std::unordered_map<std::string, unsigned char, gguf_string_hash> kByteDecoder =
+        build_bpe_byte_decoder();
+
+    std::string output;
 
     for (int32_t token_id_value : token_ids) {
-        output << token_piece(token_id_value);
+        const std::string &piece = token_piece(token_id_value);
+        const std::vector<std::string> symbols = split_utf8_codepoints(piece);
+        for (const std::string &symbol : symbols) {
+            const auto it = kByteDecoder.find(symbol);
+            if (it == kByteDecoder.end()) {
+                throw std::runtime_error("failed to decode token piece: " + piece);
+            }
+            output.push_back(static_cast<char>(it->second));
+        }
     }
 
-    return output.str();
+    return output;
 }
