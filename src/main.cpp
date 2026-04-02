@@ -150,7 +150,7 @@ int32_t sample_next_token(
 
 int main() {
     const std::string path = "qwen2.5-1.5b-instruct-fp16.gguf";
-    const std::string prompt = "你是谁？请用一句话回答。";
+    const std::string prompt = "举头望明月";
 
     try {
         const gguf_model model = load_gguf_model(path);
@@ -171,7 +171,7 @@ int main() {
         shape.ffn_hidden_size = metadata_u32(model, "qwen2.feed_forward_length");
 
         config cfg{};
-        cfg.max_new_tokens = 128;
+        cfg.max_new_tokens = 32;
         cfg.temperature = 0.8f;
         cfg.top_k = 40;
         cfg.top_p = 0.95f;

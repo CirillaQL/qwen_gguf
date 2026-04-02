@@ -1,6 +1,7 @@
 #include "tokenizer.h"
 
 #include <array>
+#include <cstring>
 #include <limits>
 #include <sstream>
 #include <stdexcept>

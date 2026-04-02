@@ -84,44 +84,28 @@ std::vector<float> read_embedding_row(
     }
 }
 
-std::vector<float> read_tensor_row(
-    const gguf_tensor_data &tensor,
-    uint64_t row_index
+float dot_product_f32_row(
+    const float *row_data,
+    const float *input_data,
+    uint32_t input_dim
 ) {
-    if (tensor.info.dimensions.size() != 2) {
-        throw std::runtime_error("tensor must be 2D");
+    float sum = 0.0f;
+    for (uint32_t in_index = 0; in_index < input_dim; ++in_index) {
+        sum += input_data[in_index] * row_data[in_index];
     }
+    return sum;
+}
 
-    const uint64_t row_width = tensor.info.dimensions[0];
-    const uint64_t row_count = tensor.info.dimensions[1];
-    if (row_index >= row_count) {
-        throw std::runtime_error("tensor row index out of range");
+float dot_product_f16_row(
+    const uint16_t *row_data,
+    const float *input_data,
+    uint32_t input_dim
+) {
+    float sum = 0.0f;
+    for (uint32_t in_index = 0; in_index < input_dim; ++in_index) {
+        sum += input_data[in_index] * fp16_to_fp32(row_data[in_index]);
     }
-    if (row_width > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-        throw std::runtime_error("tensor row width is too large");
-    }
-
-    const size_t width = static_cast<size_t>(row_width);
-    std::vector<float> row(width);
-
-    switch (tensor.info.type) {
-        case GGML_TYPE_F32: {
-            const size_t offset = static_cast<size_t>(row_index) * width * sizeof(float);
-            const float *data = reinterpret_cast<const float *>(tensor.raw_data.data() + offset);
-            row.assign(data, data + width);
-            return row;
-        }
-        case GGML_TYPE_F16: {
-            const size_t offset = static_cast<size_t>(row_index) * width * sizeof(uint16_t);
-            const uint16_t *data = reinterpret_cast<const uint16_t *>(tensor.raw_data.data() + offset);
-            for (size_t i = 0; i < width; ++i) {
-                row[i] = fp16_to_fp32(data[i]);
-            }
-            return row;
-        }
-        default:
-            throw std::runtime_error("unsupported tensor type");
-    }
+    return sum;
 }
 
 std::vector<float> read_tensor_vector(const gguf_tensor_data &tensor) {
@@ -182,18 +166,39 @@ void project_batch(
 
     output.assign(static_cast<size_t>(batch_size) * output_dim, 0.0f);
 
-    for (uint32_t out_index = 0; out_index < output_dim; ++out_index) {
-        const std::vector<float> weight_row = read_tensor_row(weight, out_index);
-        for (uint32_t batch_index = 0; batch_index < batch_size; ++batch_index) {
-            const size_t input_offset = static_cast<size_t>(batch_index) * input_dim;
-            const size_t output_offset = static_cast<size_t>(batch_index) * output_dim;
+    switch (weight.info.type) {
+        case GGML_TYPE_F32: {
+            const float *weight_data = reinterpret_cast<const float *>(weight.raw_data.data());
+            for (uint32_t out_index = 0; out_index < output_dim; ++out_index) {
+                const float *row_data = weight_data + static_cast<size_t>(out_index) * input_dim;
+                for (uint32_t batch_index = 0; batch_index < batch_size; ++batch_index) {
+                    const size_t input_offset = static_cast<size_t>(batch_index) * input_dim;
+                    const size_t output_offset = static_cast<size_t>(batch_index) * output_dim;
 
-            float sum = bias == nullptr ? 0.0f : (*bias)[out_index];
-            for (uint32_t in_index = 0; in_index < input_dim; ++in_index) {
-                sum += input[input_offset + in_index] * weight_row[in_index];
+                    float sum = bias == nullptr ? 0.0f : (*bias)[out_index];
+                    sum += dot_product_f32_row(row_data, input.data() + input_offset, input_dim);
+                    output[output_offset + out_index] = sum;
+                }
             }
-            output[output_offset + out_index] = sum;
+            return;
         }
+        case GGML_TYPE_F16: {
+            const uint16_t *weight_data = reinterpret_cast<const uint16_t *>(weight.raw_data.data());
+            for (uint32_t out_index = 0; out_index < output_dim; ++out_index) {
+                const uint16_t *row_data = weight_data + static_cast<size_t>(out_index) * input_dim;
+                for (uint32_t batch_index = 0; batch_index < batch_size; ++batch_index) {
+                    const size_t input_offset = static_cast<size_t>(batch_index) * input_dim;
+                    const size_t output_offset = static_cast<size_t>(batch_index) * output_dim;
+
+                    float sum = bias == nullptr ? 0.0f : (*bias)[out_index];
+                    sum += dot_product_f16_row(row_data, input.data() + input_offset, input_dim);
+                    output[output_offset + out_index] = sum;
+                }
+            }
+            return;
+        }
+        default:
+            throw std::runtime_error("unsupported tensor type");
     }
 }
 
@@ -337,9 +342,12 @@ void run_state::compute_qkv(const gguf_model &model, uint32_t layer_index) {
     }
 
     const std::string prefix = "blk." + std::to_string(layer_index);
-    const gguf_tensor_data &q_weight = load_gguf_tensor_data(model, prefix + ".attn_q.weight");
-    const gguf_tensor_data &k_weight = load_gguf_tensor_data(model, prefix + ".attn_k.weight");
-    const gguf_tensor_data &v_weight = load_gguf_tensor_data(model, prefix + ".attn_v.weight");
+    const std::string q_weight_name = prefix + ".attn_q.weight";
+    const std::string k_weight_name = prefix + ".attn_k.weight";
+    const std::string v_weight_name = prefix + ".attn_v.weight";
+    const gguf_tensor_data &q_weight = load_gguf_tensor_data(model, q_weight_name);
+    const gguf_tensor_data &k_weight = load_gguf_tensor_data(model, k_weight_name);
+    const gguf_tensor_data &v_weight = load_gguf_tensor_data(model, v_weight_name);
     const std::vector<float> q_bias =
         read_tensor_vector(load_gguf_tensor_data(model, prefix + ".attn_q.bias"));
     const std::vector<float> k_bias =
@@ -564,8 +572,9 @@ void run_state::run_block(const gguf_model &model, uint32_t layer_index, uint32_
     const std::string prefix = "blk." + std::to_string(layer_index);
     constexpr float kRmsNormEps = 1e-6f;
 
+    const std::string attn_norm_weight_name = prefix + ".attn_norm.weight";
     const gguf_tensor_data &attn_norm_weight_tensor =
-        load_gguf_tensor_data(model, prefix + ".attn_norm.weight");
+        load_gguf_tensor_data(model, attn_norm_weight_name);
     const std::vector<float> attn_norm_weight = read_tensor_vector(attn_norm_weight_tensor);
     weighted_rmsnorm_batch(
         hidden_,
@@ -583,8 +592,9 @@ void run_state::run_block(const gguf_model &model, uint32_t layer_index, uint32_
         hidden_[i] += attn_out_[i];
     }
 
+    const std::string ffn_norm_weight_name = prefix + ".ffn_norm.weight";
     const gguf_tensor_data &ffn_norm_weight_tensor =
-        load_gguf_tensor_data(model, prefix + ".ffn_norm.weight");
+        load_gguf_tensor_data(model, ffn_norm_weight_name);
     const std::vector<float> ffn_norm_weight = read_tensor_vector(ffn_norm_weight_tensor);
     weighted_rmsnorm_batch(
         hidden_,
@@ -595,9 +605,12 @@ void run_state::run_block(const gguf_model &model, uint32_t layer_index, uint32_
         norm_
     );
 
-    const gguf_tensor_data &gate_weight = load_gguf_tensor_data(model, prefix + ".ffn_gate.weight");
-    const gguf_tensor_data &up_weight = load_gguf_tensor_data(model, prefix + ".ffn_up.weight");
-    const gguf_tensor_data &down_weight = load_gguf_tensor_data(model, prefix + ".ffn_down.weight");
+    const std::string gate_weight_name = prefix + ".ffn_gate.weight";
+    const std::string up_weight_name = prefix + ".ffn_up.weight";
+    const std::string down_weight_name = prefix + ".ffn_down.weight";
+    const gguf_tensor_data &gate_weight = load_gguf_tensor_data(model, gate_weight_name);
+    const gguf_tensor_data &up_weight = load_gguf_tensor_data(model, up_weight_name);
+    const gguf_tensor_data &down_weight = load_gguf_tensor_data(model, down_weight_name);
 
     std::vector<float> gate_proj;
     std::vector<float> up_proj;
@@ -644,8 +657,9 @@ void run_state::apply_final_norm(const gguf_model &model) {
     }
 
     constexpr float kRmsNormEps = 1e-6f;
+    const std::string output_norm_weight_name = "output_norm.weight";
     const gguf_tensor_data &output_norm_weight_tensor =
-        load_gguf_tensor_data(model, "output_norm.weight");
+        load_gguf_tensor_data(model, output_norm_weight_name);
     const std::vector<float> output_norm_weight = read_tensor_vector(output_norm_weight_tensor);
     weighted_rmsnorm_batch(
         hidden_,
@@ -662,7 +676,8 @@ void run_state::compute_logits(const gguf_model &model) {
         throw std::runtime_error("final norm buffer size mismatch");
     }
 
-    const gguf_tensor_data &output_weight = load_gguf_tensor_data(model, "output.weight");
+    const std::string output_weight_name = "output.weight";
+    const gguf_tensor_data &output_weight = load_gguf_tensor_data(model, output_weight_name);
     if (output_weight.info.dimensions.size() != 2) {
         throw std::runtime_error("output weight must be 2D");
     }

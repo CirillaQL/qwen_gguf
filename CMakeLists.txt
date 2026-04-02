@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(qwen_gguf
     VERSION 0.1.0
-    DESCRIPTION "Basic C++ project scaffold for macOS Apple Silicon"
+    DESCRIPTION "Basic C++ project scaffold for Qwen GGUF experiments"
     LANGUAGES CXX
 )
 
@@ -19,6 +19,9 @@ if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architectures for macOS" FORCE)
 endif()
 
+set(QWEN_GGUF_CPU_FLAGS "" CACHE STRING "Extra CPU-specific compile flags for Release builds")
+option(QWEN_GGUF_TUNE_NATIVE "Enable native CPU tuning for Release builds" ON)
+
 add_executable(qwen_gguf
     src/gguf.cpp
     src/run.cpp
@@ -32,23 +35,37 @@ target_include_directories(qwen_gguf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/includes
 )
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(qwen_gguf PRIVATE
         -Wall
         -Wextra
         -Wpedantic
     )
+endif()
 
-    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
-        target_compile_options(qwen_gguf PRIVATE
-            $<$<CONFIG:Release>:-mcpu=apple-m4>
+set(QWEN_GGUF_RELEASE_CPU_FLAGS "")
+
+if(QWEN_GGUF_CPU_FLAGS)
+    separate_arguments(QWEN_GGUF_RELEASE_CPU_FLAGS NATIVE_COMMAND "${QWEN_GGUF_CPU_FLAGS}")
+elseif(QWEN_GGUF_TUNE_NATIVE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+        set(QWEN_GGUF_RELEASE_CPU_FLAGS
+            -march=native
+            -mtune=native
         )
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            set(QWEN_GGUF_RELEASE_CPU_FLAGS
+                -mcpu=native
+            )
+        endif()
     endif()
 endif()
 
 target_compile_options(qwen_gguf PRIVATE
     $<$<CONFIG:Release>:-O3>
     $<$<CONFIG:Release>:-DNDEBUG>
+    $<$<CONFIG:Release>:${QWEN_GGUF_RELEASE_CPU_FLAGS}>
 )
 
 if(APPLE)
