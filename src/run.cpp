@@ -495,7 +495,8 @@ void run_state::compute_attention(const gguf_model &model, uint32_t layer_index,
             const size_t score_offset =
                 (static_cast<size_t>(token_index) * shape_.n_heads + head_index) * shape_.max_seq_len;
 
-            float max_score = -std::numeric_limits<float>::infinity();
+            bool has_score = false;
+            float max_score = 0.0f;
             for (uint32_t past_position = 0; past_position < seq_len; ++past_position) {
                 const size_t k_offset = kv_cache_offset(layer_index, past_position)
                                       + static_cast<size_t>(kv_head_index) * shape_.head_dim;
@@ -506,9 +507,13 @@ void run_state::compute_attention(const gguf_model &model, uint32_t layer_index,
                 }
                 score *= scale;
                 attn_scores_[score_offset + past_position] = score;
-                if (score > max_score) {
+                if (!has_score || score > max_score) {
                     max_score = score;
+                    has_score = true;
                 }
+            }
+            if (!has_score) {
+                throw std::runtime_error("attention produced no scores");
             }
 
             float exp_sum = 0.0f;
@@ -517,8 +522,8 @@ void run_state::compute_attention(const gguf_model &model, uint32_t layer_index,
                 attn_probs_[score_offset + past_position] = prob;
                 exp_sum += prob;
             }
-            if (exp_sum == 0.0f) {
-                throw std::runtime_error("attention softmax sum is zero");
+            if (!(exp_sum > 0.0f) || !std::isfinite(exp_sum)) {
+                throw std::runtime_error("attention softmax sum is invalid");
             }
 
             const size_t ctx_offset =

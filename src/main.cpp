@@ -171,7 +171,7 @@ int main() {
         shape.ffn_hidden_size = metadata_u32(model, "qwen2.feed_forward_length");
 
         config cfg{};
-        cfg.max_new_tokens = 8;
+        cfg.max_new_tokens = 128;
         cfg.temperature = 0.8f;
         cfg.top_k = 40;
         cfg.top_p = 0.95f;
