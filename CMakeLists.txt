@@ -21,6 +21,7 @@ endif()
 
 set(QWEN_GGUF_CPU_FLAGS "" CACHE STRING "Extra CPU-specific compile flags for Release builds")
 option(QWEN_GGUF_TUNE_NATIVE "Enable native CPU tuning for Release builds" ON)
+option(QWEN_GGUF_ENABLE_OPENMP "Enable OpenMP support" ON)
 
 add_executable(qwen_gguf
     src/gguf.cpp
@@ -72,6 +73,23 @@ if(APPLE)
     target_link_options(qwen_gguf PRIVATE
         $<$<CONFIG:Release>:-Wl,-dead_strip>
     )
+endif()
+
+if(QWEN_GGUF_ENABLE_OPENMP)
+    if(APPLE)
+        list(APPEND CMAKE_PREFIX_PATH
+            /opt/homebrew/opt/libomp
+            /usr/local/opt/libomp
+        )
+    endif()
+
+    find_package(OpenMP QUIET COMPONENTS CXX)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(qwen_gguf PRIVATE OpenMP::OpenMP_CXX)
+        target_compile_definitions(qwen_gguf PRIVATE QWEN_GGUF_USE_OPENMP=1)
+    else()
+        message(WARNING "OpenMP requested but not found; building without OpenMP support")
+    endif()
 endif()
 
 include(CheckIPOSupported)

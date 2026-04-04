@@ -139,7 +139,7 @@ std::vector<float> read_tensor_vector(const gguf_tensor_data &tensor) {
     }
 }
 
-void project_batch(
+void gemm_batch(
     const gguf_tensor_data &weight,
     const std::vector<float> &input,
     uint32_t batch_size,
@@ -169,6 +169,9 @@ void project_batch(
     switch (weight.info.type) {
         case GGML_TYPE_F32: {
             const float *weight_data = reinterpret_cast<const float *>(weight.raw_data.data());
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
             for (uint32_t out_index = 0; out_index < output_dim; ++out_index) {
                 const float *row_data = weight_data + static_cast<size_t>(out_index) * input_dim;
                 for (uint32_t batch_index = 0; batch_index < batch_size; ++batch_index) {
@@ -184,6 +187,9 @@ void project_batch(
         }
         case GGML_TYPE_F16: {
             const uint16_t *weight_data = reinterpret_cast<const uint16_t *>(weight.raw_data.data());
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
             for (uint32_t out_index = 0; out_index < output_dim; ++out_index) {
                 const uint16_t *row_data = weight_data + static_cast<size_t>(out_index) * input_dim;
                 for (uint32_t batch_index = 0; batch_index < batch_size; ++batch_index) {
@@ -355,7 +361,7 @@ void run_state::compute_qkv(const gguf_model &model, uint32_t layer_index) {
     const std::vector<float> v_bias =
         read_tensor_vector(load_gguf_tensor_data(model, prefix + ".attn_v.bias"));
 
-    project_batch(
+    gemm_batch(
         q_weight,
         norm_,
         shape_.batch_size,
@@ -364,7 +370,7 @@ void run_state::compute_qkv(const gguf_model &model, uint32_t layer_index) {
         q_,
         &q_bias
     );
-    project_batch(
+    gemm_batch(
         k_weight,
         norm_,
         shape_.batch_size,
@@ -373,7 +379,7 @@ void run_state::compute_qkv(const gguf_model &model, uint32_t layer_index) {
         k_,
         &k_bias
     );
-    project_batch(
+    gemm_batch(
         v_weight,
         norm_,
         shape_.batch_size,
@@ -551,7 +557,7 @@ void run_state::compute_attention(const gguf_model &model, uint32_t layer_index,
 
     const std::string tensor_name = "blk." + std::to_string(layer_index) + ".attn_output.weight";
     const gguf_tensor_data &output_weight = load_gguf_tensor_data(model, tensor_name);
-    project_batch(
+    gemm_batch(
         output_weight,
         attn_ctx_,
         shape_.batch_size,
@@ -614,7 +620,7 @@ void run_state::run_block(const gguf_model &model, uint32_t layer_index, uint32_
 
     std::vector<float> gate_proj;
     std::vector<float> up_proj;
-    project_batch(
+    gemm_batch(
         gate_weight,
         norm_,
         shape_.batch_size,
@@ -622,7 +628,7 @@ void run_state::run_block(const gguf_model &model, uint32_t layer_index, uint32_
         shape_.ffn_hidden_size,
         gate_proj
     );
-    project_batch(
+    gemm_batch(
         up_weight,
         norm_,
         shape_.batch_size,
@@ -637,7 +643,7 @@ void run_state::run_block(const gguf_model &model, uint32_t layer_index, uint32_
     }
 
     std::vector<float> ffn_out;
-    project_batch(
+    gemm_batch(
         down_weight,
         ffn_hidden,
         shape_.batch_size,
@@ -689,7 +695,7 @@ void run_state::compute_logits(const gguf_model &model) {
     }
 
     const uint32_t vocab_size = static_cast<uint32_t>(output_weight.info.dimensions[1]);
-    project_batch(
+    gemm_batch(
         output_weight,
         norm_,
         shape_.batch_size,

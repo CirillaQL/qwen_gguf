@@ -3,8 +3,10 @@
 #include "tokenizer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -193,9 +195,12 @@ int main() {
         state.reset_sequence();
 
         std::vector<int32_t> full_token_ids = prompt_token_ids;
+        using steady_clock = std::chrono::steady_clock;
+        const steady_clock::time_point prefill_begin = steady_clock::now();
         for (uint32_t position_index = 0; position_index < prompt_token_ids.size(); ++position_index) {
             forward_token(model, state, prompt_token_ids[position_index], position_index);
         }
+        const steady_clock::time_point prefill_end = steady_clock::now();
 
         std::mt19937 rng(static_cast<uint32_t>(cfg.seed < 0 ? std::random_device{}() : cfg.seed));
 
@@ -203,6 +208,8 @@ int main() {
         std::cout << "[generated]" << '\n';
         std::cout.flush();
 
+        uint32_t generated_tokens = 0;
+        const steady_clock::time_point decode_begin = steady_clock::now();
         for (uint32_t step = 0; step < cfg.max_new_tokens; ++step) {
             const int32_t next_token = sample_next_token(state.logits_, full_token_ids, cfg, rng);
             if (tokenizer.get_eos_token_id() >= 0 && next_token == tokenizer.get_eos_token_id()) {
@@ -210,6 +217,7 @@ int main() {
             }
 
             full_token_ids.push_back(next_token);
+            ++generated_tokens;
             std::cout << tokenizer.decode({next_token});
             std::cout.flush();
 
@@ -224,7 +232,34 @@ int main() {
                 static_cast<uint32_t>(full_token_ids.size() - 1)
             );
         }
+        const steady_clock::time_point decode_end = steady_clock::now();
         std::cout << '\n';
+
+        const double prefill_seconds =
+            std::chrono::duration<double>(prefill_end - prefill_begin).count();
+        const double decode_seconds =
+            std::chrono::duration<double>(decode_end - decode_begin).count();
+        const double total_seconds = prefill_seconds + decode_seconds;
+
+        const double prefill_tps = prefill_seconds > 0.0
+            ? static_cast<double>(prompt_token_ids.size()) / prefill_seconds
+            : 0.0;
+        const double decode_tps = decode_seconds > 0.0
+            ? static_cast<double>(generated_tokens) / decode_seconds
+            : 0.0;
+        const double e2e_tps = total_seconds > 0.0
+            ? static_cast<double>(prompt_token_ids.size() + generated_tokens) / total_seconds
+            : 0.0;
+
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "[perf]" << '\n';
+        std::cout << "prompt_tokens: " << prompt_token_ids.size() << '\n';
+        std::cout << "generated_tokens: " << generated_tokens << '\n';
+        std::cout << "prefill_seconds: " << prefill_seconds << '\n';
+        std::cout << "decode_seconds: " << decode_seconds << '\n';
+        std::cout << "prefill_token_per_s: " << prefill_tps << '\n';
+        std::cout << "decode_token_per_s: " << decode_tps << '\n';
+        std::cout << "e2e_token_per_s: " << e2e_tps << '\n';
     } catch (const std::exception &ex) {
         std::cerr << "error: " << ex.what() << std::endl;
         return 1;
